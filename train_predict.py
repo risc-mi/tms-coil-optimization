@@ -1,3 +1,6 @@
+import os
+import numpy as np
+from scipy.spatial.transform import Rotation
 import tensorflow as tf
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, CSVLogger
 from tensorflow.keras.models import load_model
@@ -16,8 +19,6 @@ mixed_precision.set_global_policy(policy)
 print('Compute dtype: %s' % policy.compute_dtype)
 print('Variable dtype: %s' % policy.variable_dtype)
 
-import numpy as np
-import os
 from model import unet
 from utils import is_any_string_in_list_present
 from utils import (
@@ -50,12 +51,11 @@ model.compile(loss=losses, loss_weights=loss_weights, optimizer=Adam(learning_ra
 # Print the model summary
 model.summary()
 
-
+# Load data
 path_data = './sample_data'
 t1s = load_data(os.path.join(path_data, 't1'), resample_=True)
 tissues = load_data(os.path.join(path_data, 'tissues'), resample_=True)
-dof = load_data(os.path.join(path_data, 'dof'))
-
+target_coords = load_data(os.path.join(path_data, 'target_coords'))
 # affine matrix for the optimized coil positioning
 # see also: https://simnibs.github.io/simnibs/build/html/documentation/sim_struct/position.html
 # see also: https://simnibs.github.io/simnibs/build/html/documentation/opt_struct/tmsoptimize.html#tmsoptimize-doc
@@ -63,9 +63,8 @@ affine = load_data(os.path.join(path_data, 'affine_matrix'))
 targetdistance_efield_path = os.path.join(path_data, 'targetdistance_efield') 
 
 train_subjs = [ 100206 ]
-val_subjs = [ 100206 ]
-test_subjs = [ 100206 ]
-
+val_subjs = [ 100307 ]
+test_subjs = [ 162026 ]
 
 data_files = [s.split('.npy')[0] for s in os.listdir(targetdistance_efield_path)]
 num_files = len(data_files)
@@ -103,16 +102,21 @@ csv_logger = CSVLogger('training.log', separator=',', append=False)
 do_training = True
 if do_training:
     print('Start training')
-    model.fit(data_generator(batch_size, data_dir=targetdistance_efield_path, file_list=train_files, t1s=t1s, tissues=tissues, dof=dof, affine=affine), steps_per_epoch=steps_per_epoch,
-              validation_data=data_generator(batch_size, data_dir=targetdistance_efield_path, file_list=val_files, t1s=t1s, tissues=tissues, dof=dof, affine=affine), validation_steps=val_steps,
-              callbacks=[mcp_save, mcp_best_save, reduce_lr, csv_logger], epochs=25)
+    os.makedirs('chkpts', exist_ok=True)
+    model.fit(data_generator(batch_size, data_dir=targetdistance_efield_path, file_list=train_files, t1s=t1s, tissues=tissues, target_coords=target_coords, affine=affine), steps_per_epoch=steps_per_epoch,
+              validation_data=data_generator(batch_size, data_dir=targetdistance_efield_path, file_list=val_files, t1s=t1s, tissues=tissues, target_coords=target_coords, affine=affine), validation_steps=val_steps,
+              callbacks=[mcp_save, mcp_best_save, reduce_lr, csv_logger], epochs=250)
     print('End Training')
+
 # After training, set the network weights to the best checkpoint (calculated on the validation set)
 model.load_weights(best_checkpoint_path)
 
 # Prediction
 do_prediction = True
 predictions_dir = './predictions'
+os.makedirs(os.path.join(predictions_dir, 'emagn'), exist_ok=True)
+os.makedirs(os.path.join(predictions_dir, 'trans'), exist_ok=True)
+os.makedirs(os.path.join(predictions_dir, 'rot'), exist_ok=True)
 if do_prediction:
     print('Start Prediction')
     for file_ in test_files:
@@ -143,15 +147,17 @@ if do_prediction:
         save_to_gzip(outpath_, outdata_)
         
         # Save trans gt and prediction
-        gt2_ = dof[file_][:3]
-        outdata_ = np.concatenate((gt2_, prediction_[1].T), axis=-1)
+        affine_matrix = affine[file_][...,0].T
+        optimal_pos = affine_matrix[:3,3].flatten()
+        target_pos = target_coords[file_].flatten()
+        gt2_ = optimal_pos - target_pos
+        outdata_ = np.concatenate((gt2_.reshape((3, 1)), prediction_[1].T), axis=-1)
         outpath_ = os.path.join(predictions_dir, 'trans', outfilename_)
         save_to_gzip(outpath_, outdata_)
 
         # Save rot gt and prediction
-        from scipy.spatial.transform import Rotation
-        m_aff = Rotation.from_matrix(affine[file_][:3, :3, 0].T)
-        gt3_ = m_aff.as_euler('zxy')
+        rot_aff = Rotation.from_matrix(affine_matrix[:3, :3])
+        gt3_ = rot_aff.as_euler('zxy')
         outdata_ = np.concatenate((gt3_.reshape((3, 1)), prediction_[2].T), axis=-1)
         outpath_ = os.path.join(predictions_dir, 'rot', outfilename_)
         save_to_gzip(outpath_, outdata_)

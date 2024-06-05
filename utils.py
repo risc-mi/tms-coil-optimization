@@ -88,7 +88,7 @@ def load_data(path_, resample_=False):
     return dict_data
 
 
-def data_generator(batch_size, data_dir, file_list, t1s, tissues, dof, affine):
+def data_generator(batch_size, data_dir, file_list, t1s, tissues, target_coords, affine):
     """
     A generator function to yield batches of data for training.
 
@@ -141,11 +141,15 @@ def data_generator(batch_size, data_dir, file_list, t1s, tissues, dof, affine):
                 y1_ = targetdistance_efield_arr[...,1:2]
 
                 # create the neural network's output 2: the optimal coil positioning
-                y2_ = dof[file_list[j]][:3]
-
+                # output 2: optimal position coords minus target coords
+                affine_matrix = affine[file_list[j]][...,0].T
+                optimal_pos = affine_matrix[:3,3].flatten()
+                target_pos = target_coords[file_list[j]].flatten()
+                y2_ = optimal_pos - target_pos
+                
                 # create the neural network's output 3: the optimal coil orientation
-                m_aff = affine[file_list[j]][:3,:3,0].T
-                R = Rotation.from_matrix(m_aff)
+                rot_aff = affine_matrix[:3,:3]
+                R = Rotation.from_matrix(rot_aff)
                 y3_ = R.as_euler('zxy')
 
                 batch_x1.append(x1_)
